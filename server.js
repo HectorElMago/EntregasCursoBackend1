@@ -3,16 +3,19 @@ const { createServer } = require("http");
 const { Server } = require("socket.io");
 const exphbs = require("express-handlebars");
 const path = require("path");
-const fs = require("fs");
+const mongoose = require("mongoose");
 const productsRouter = require("./routes/products");
 const cartsRouter = require("./routes/carts");
+const Cart = require("./models/Cart");
+const Product = require("./models/Product");
 
-const productsPath = "./data/products.json";
-
-let products = [];
-if (fs.existsSync(productsPath)) {
-  products = JSON.parse(fs.readFileSync(productsPath, "utf-8"));
-}
+// Conectar a MongoDB Atlas
+mongoose
+  .connect(
+    "mongodb+srv://yusseffmisseneyt:0aSCx4e5VYoyzSmL@cluster0.p5jgb.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+  )
+  .then(() => console.log("Conectado a MongoDB Atlas"))
+  .catch((err) => console.error("Error al conectar a MongoDB", err));
 
 // Crear la app y el servidor HTTP
 const app = express();
@@ -38,31 +41,63 @@ app.use((req, res, next) => {
 app.use("/api/products", productsRouter);
 app.use("/api/carts", cartsRouter);
 
-// Rutas para vistas
-app.get("/", (req, res) => {
-  res.render("home", { products: products });
-});
-
 app.get("/realtimeproducts", (req, res) => {
-  res.render("realTimeProducts", { products: products });
+  res.render("realTimeProducts", { title: "Productos en tiempo real" });
 });
 
-// Websockets
+// Ruta principal para la vista de productos según carrito seleccionado
+app.get("/", async (req, res) => {
+  const { limit = 10, page = 1, cartId } = req.query; // Obtener carrito seleccionado y parámetros de paginación
+
+  try {
+    // Buscar productos con paginación
+    const limitParsed = parseInt(limit) || 10;
+    const pageParsed = parseInt(page) || 1;
+    const totalProducts = await Product.countDocuments();
+    const totalPages = Math.ceil(totalProducts / limitParsed);
+    const products = await Product.find()
+      .skip((pageParsed - 1) * limitParsed)
+      .limit(limitParsed);
+
+    // Buscar carrito seleccionado o crear uno nuevo si no existe
+    let cart;
+    if (cartId) {
+      cart = await Cart.findById(cartId).populate("products.product");
+    } else {
+      cart = new Cart({ products: [] });
+      await cart.save();
+    }
+
+    res.render("home", {
+      title: "Lista de productos",
+      products,
+      cartId: cart._id, // Pasar el ID del carrito a la vista
+      totalPages,
+      page: pageParsed,
+      hasPrevPage: pageParsed > 1,
+      hasNextPage: pageParsed < totalPages,
+      prevLink:
+        pageParsed > 1
+          ? `/?limit=${limitParsed}&page=${pageParsed - 1}&cartId=${cart._id}`
+          : null,
+      nextLink:
+        pageParsed < totalPages
+          ? `/?limit=${limitParsed}&page=${pageParsed + 1}&cartId=${cart._id}`
+          : null,
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Error al cargar productos" });
+  }
+});
+
 io.on("connection", (socket) => {
   console.log("Nuevo cliente conectado");
-
-  // Emitir productos actualizados a todos los clientes
-  socket.emit("productList", products);
-
-  // Escuchar cuando se agregue o elimine un producto
+  socket.emit("productList", []);
   socket.on("newProduct", (product) => {
-    products.push(product);
-    io.emit("productList", products);
+    io.emit("productList", []);
   });
-
   socket.on("deleteProduct", (id) => {
-    products = products.filter((p) => p.id !== id);
-    io.emit("productList", products);
+    io.emit("productList", []);
   });
 });
 
